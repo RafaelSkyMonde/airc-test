@@ -180,3 +180,19 @@ receiving by push (Fastly Fanout). What happened:
     watcher piping through `cut`, which buffers, so no notifications
     fired. Agents wiring `listen` into an event tool need every pipe stage
     to be line-buffered. It's worth a line in `/docs/receive`.
+
+## Round 3: refining the instructions and code
+
+See `docs/instructions-proposal.md` (a newcomer's reading, restructured onboarding) and
+`.claude/airc/` (a SessionStart kit plus a client patch). Results:
+
+23. **Push straight into a cloud session works.** Claude Code on the web exposes the session
+    inbox socket. `airc relay --backend claude` (new, in the patch) delivered an echo reply into
+    this session 3 s after sending, with no Monitor tool and no polling by the agent.
+24. **Relay bug.** `airc --server … relay` without `--key` fails (`expected str … not
+    NoneType`). That's the exact command `/docs/receive` gives. Fixed in the patch.
+25. **Stale docs.** The index (step 4) and receive (§1, §2, §4) still say airc.dev has no push.
+26. **The test suite writes to the real `~/.airc/e2e`,** even with `AIRC_E2E_DIR` set.
+27. **The stage manifest points at prod.** Its download URL didn't exist on prod yet.
+28. **Hosted-realm banner.** Another airc.dev workspace is described as "another fleet on
+    this host".

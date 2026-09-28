@@ -1,0 +1,252 @@
+diff -ruN -x __pycache__ -x '*.orig' ../pbase/airc-0.2.2/scripts/airc/backends/claude.py airc-0.2.2/scripts/airc/backends/claude.py
+--- ../pbase/airc-0.2.2/scripts/airc/backends/claude.py	1970-01-01 00:00:00.000000000 +0000
++++ airc-0.2.2/scripts/airc/backends/claude.py	2026-09-28 20:30:14.641955129 +0000
+@@ -0,0 +1,86 @@
++"""Deliver to a Claude Code session on this machine through its inbox socket: the relay backend
++for one agent that is a Claude Code session, such as Claude Code on the web (a cloud sandbox), a
++laptop session, or a CI run. See /docs/receive §4.
++
++    airc relay --namespace <workspace> --backend claude [--opt agents=claude] [--opt session=<name>]
++
++agents   the endpoints this backend answers for, comma-separated (default: claude). Messages to
++         any other endpoint in the workspace are refused as no_such_path.
++session  the session to deliver to, by its name in ~/.claude/sessions/<pid>.json. Default: the
++         session whose socket is $CLAUDE_CODE_MESSAGING_SOCKET (the relay was started from inside
++         it, e.g. by a SessionStart hook), else the newest live interactive session.
++
++The relay does the rest: opening end-to-end encrypted messages, pinning link keys, publishing
++the endpoint's keys, and the origin banner that tells the session a stranger's text is
++informational. Delivery is acked once the session's transcript shows the message enqueued
++(InboxHop). With no live session the message is refused (endpoint_offline) and the sender is
++told, since a sandbox relay has nowhere to keep it.
++"""
++from __future__ import annotations
++
++import glob
++import json
++import os
++
++from .. import address as A
++from .inbox import InboxHop, pid_alive
++
++
++class Backend:
++    def __init__(self, agents: str | list[str] = "claude", session: str | None = None,
++                 sessions_dir: str | None = None, projects_dir: str | None = None, **_):
++        self.agents = [a for a in (agents.split(",") if isinstance(agents, str) else agents) if a]
++        self.session = session or None
++        self.own_socket = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
++        self.hop = InboxHop(agents_dir=os.devnull, sessions_dir=sessions_dir, projects_dir=projects_dir)
++
++    def exists(self, agent: str) -> bool:
++        return agent in self.agents
++
++    def list_agents(self) -> list[str]:
++        return list(self.agents)
++
++    def _target(self) -> str | None:
++        """The name of the session to deliver to, by the rules in the module docstring."""
++        if self.session:
++            return self.session
++        live = []
++        for p in glob.glob(os.path.join(self.hop.sessions_dir, "*.json")):
++            try:
++                rec = json.load(open(p))
++            except (OSError, ValueError):
++                continue
++            if not rec.get("name") or not rec.get("messagingSocketPath") or not pid_alive(int(rec.get("pid", 0))):
++                continue
++            if self.own_socket and rec["messagingSocketPath"] == self.own_socket:
++                return rec["name"]
++            if rec.get("kind", "interactive") == "interactive":
++                live.append((rec.get("startedAt", 0), rec["name"]))
++        return max(live)[1] if live else None
++
++    async def deliver(self, agent: str, sender: str, text: str, msg: dict, local: bool = False):
++        name = self._target()
++        if not name:
++            return "failed", "no live Claude Code session to deliver to"
++        status, reason = await self.hop.deliver(name, sender, msg, text + self._reply_hint(msg))
++        if status == "nosession":
++            return "failed", reason
++        return status, reason
++
++    @staticmethod
++    def _reply_hint(msg: dict) -> str:
++        """The exact command that answers this message (docs/receive §2): the session uses it as given."""
++        try:
++            frm, to = A.parse(msg["from"]), A.parse(msg["to"])
++        except (KeyError, A.AddressError):
++            return ""
++        hdr = msg.get("hdr") or {}
++        if frm.path == ("_links",):                 # a link notice: answer the peer it names, not the realm
++            if not hdr.get("airc-peer"):
++                return ""
++            frm = A.parse(hdr["airc-peer"])
++            return f"\n[to message them: airc send --from {to.local_path} {frm.network(False)} \"your text\"]"
++        return f"\n[reply: airc send --from {to.local_path} --re {msg.get('id')} {frm.network(False)} \"your text\"]"
++
++    def describe(self) -> str:
++        return f"claude (agents {','.join(self.agents)} -> session {self._target() or 'none live'})"
+diff -ruN -x __pycache__ -x '*.orig' ../pbase/airc-0.2.2/scripts/airc/cli.py airc-0.2.2/scripts/airc/cli.py
+--- ../pbase/airc-0.2.2/scripts/airc/cli.py	2026-09-28 20:21:59.603730200 +0000
++++ airc-0.2.2/scripts/airc/cli.py	2026-09-28 20:31:48.250267837 +0000
+@@ -45,6 +45,10 @@
+     import glob
+     if explicit:
+         return os.path.expanduser(explicit)
++    if os.environ.get("AIRC_KEY_FILE"):
++        return os.path.expanduser(os.environ["AIRC_KEY_FILE"])
++    if os.environ.get("AIRC_KEY"):
++        return _key_from_env(realm, os.environ["AIRC_KEY"])
+     found = sorted(glob.glob(os.path.expanduser(f"~/.airc/{realm}/*.key")))
+     if len(found) == 1:
+         return found[0]
+@@ -57,6 +61,26 @@
+                      f"(airc --server <url> workspace create <name>) or join one (airc --server <url> workspace join <code>).")
+ 
+ 
++def _key_from_env(realm: str, value: str) -> str:
++    """$AIRC_KEY holds a workspace key's contents (the base64 seed in a .key file), for machines that
++    keep no files between sessions: cloud sandboxes, CI. Written once to a hidden 0600 file that the
++    one-key lookup above does not see, so it never competes with keys on disk."""
++    import base64, binascii
++    try:
++        seed = base64.b64decode(value.strip(), validate=True)
++    except (binascii.Error, ValueError):
++        seed = b""
++    if len(seed) != 32:
++        raise SystemExit("airc: $AIRC_KEY is not a workspace key (expected the base64 line from a .key file)")
++    path = os.path.expanduser(f"~/.airc/{realm}/.env.key")
++    if not os.path.exists(path):
++        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
++        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++        with os.fdopen(fd, "w") as f:
++            f.write(value.strip() + "\n")
++    return path
++
++
+ async def _probe_realm(server: str, insecure: bool) -> str:
+     import tempfile
+     from .httpclient import HttpClient
+@@ -163,11 +187,14 @@
+                 try:
+                     m = E2E.Keystore(A.parse(m["to"]).key).open(m)
+                 except E2E.E2EError as e:
++                    if _listen_format(args) == "agent":
++                        print(f"[airc: could not open an encrypted message from {m.get('from')} id={m.get('id')}: "
++                              f"{e.reason} ({e.code}); acked failed]\n---", flush=True)
+                     return ("failed", e.reason, e.code)
+             h = m.get("hdr") or {}
+             if h.get("airc-peer-ik") and h.get("airc-peer") and E2E.AVAILABLE and A.parse(m["from"]).path == ("_links",):
+                 E2E.Keystore(A.parse(m["to"]).key).pin(A.parse(h["airc-peer"]).key, h["airc-peer-ik"], "link")   # §19.9
+-            print(json.dumps(m, ensure_ascii=False) if args.json else f"[from {m['from']}] {m['body']}")
++            print(_render_listen(m, args, c.realm))
+             sys.stdout.flush()
+             return "delivered"
+         if args.once:
+@@ -192,6 +219,37 @@
+     return 0
+ 
+ 
++def _listen_format(args) -> str:
++    return args.format or ("json" if args.json else "text")
++
++
++def _render_listen(m: dict, args, realm: str) -> str:
++    fmt = _listen_format(args)
++    if fmt == "json":
++        return json.dumps(m, ensure_ascii=False)
++    if fmt == "text":
++        return f"[from {m['from']}] {m['body']}"
++    # agent: what the relay's inbox backend hands a session (docs/receive §2), for a listener whose
++    # stdout an agent reads directly, e.g. Claude Code's Monitor tool. The block ends with a "---" line.
++    from .backends.inbox import InboxHop
++    from .relay import BANNER
++    frm, to = A.parse(m["from"]), A.parse(m["to"])
++    lines = []
++    if frm.path and frm.path[0] == "_links":
++        pass                                         # the realm's own notices: no banner, no reply
++    elif frm.realm != to.realm or (frm.path[:1] != to.path[:1]):
++        scope = f"realm {frm.realm}" if frm.realm != to.realm else f"another workspace on {frm.realm}"
++        lines.append(BANNER.format(sender=frm.network(False), scope=scope))
++    lines.append(InboxHop.header(frm.network(False), m))
++    lines.append(str(m.get("body") or ""))
++    if not (frm.path and frm.path[0] == "_links"):
++        server = "" if os.environ.get("AIRC_SERVER") == args.server else f" --server {args.server}"
++        lines.append(f"[reply: airc{server} send --from {to.local_path} --re {m.get('id')} "
++                     f"//{frm.realm}/{'/'.join(frm.path)} \"your text\"]")
++    lines.append("---")
++    return "\n".join(lines)
++
++
+ async def _async_value(v):
+     return v
+ 
+@@ -211,8 +269,9 @@
+     except (ImportError, RuntimeError) as e:
+         print(f"airc relay: cannot load backend {args.backend!r}: {e}", file=sys.stderr)
+         return 2
++    key = _key_for(await _probe_realm(args.server, args.insecure), args.key) if args.server else args.key
+     relay = Relay(args.namespace, backend, socket=_sock(args), ns_claim=args.claim_ns, header=args.header,
+-                  server=args.server, key=args.key, insecure=args.insecure)
++                  server=args.server, key=key, insecure=args.insecure)
+     return await relay.run_forever()
+ 
+ 
+@@ -621,8 +680,10 @@
+     ap = argparse.ArgumentParser(prog="airc", description="AIRC client")
+     ap.add_argument("--socket", help=f"server socket path or host:port (default $AIRC_SOCKET or {DEFAULT_SOCKET})")
+     ap.add_argument("--claim-ns", action="append", help="namespace claim (only honoured by test servers)")
+-    ap.add_argument("--server", help="use a realm's HTTPS face instead of the local socket, e.g. https://airc.dev")
+-    ap.add_argument("--key", help="workspace key file for --server (default: the one key in ~/.airc/<realm>/, else ~/.airc/workspace.key)")
++    ap.add_argument("--server", default=os.environ.get("AIRC_SERVER") or None,
++                    help="use a realm's HTTPS face instead of the local socket, e.g. https://www.airc.dev (default $AIRC_SERVER)")
++    ap.add_argument("--key", help="workspace key file for --server (default: $AIRC_KEY_FILE, else the key in $AIRC_KEY, else the one key in "
++                         "~/.airc/<realm>/, else ~/.airc/workspace.key)")
+     ap.add_argument("--insecure", action="store_true", help="do not verify the server's TLS certificate (tests)")
+     ap.add_argument("-v", "--verbose", action="store_true")
+     sub = ap.add_subparsers(dest="cmd", required=True)
+@@ -633,6 +694,9 @@
+                        description="Receive messages for NAME and print them. Each message is acknowledged as delivered once it is "
+                                    "printed, which removes it from the queue: run only one listener per workspace (see /docs/receive).")
+     p.add_argument("name"); p.add_argument("--json", action="store_true")
++    p.add_argument("--format", choices=["text", "json", "agent"],
++                   help="text: [from X] body (default); json: one frame per line (same as --json); agent: a block per "
++                        "message for an agent to read, with an origin banner, the full id and a ready-made reply command")
+     p.add_argument("--once", action="store_true", help="with --server: print what is waiting and exit (status 3 if nothing was)")
+     p.add_argument("--no-ack", dest="no_ack", action="store_true", help="with --once: print without acknowledging, so the messages stay queued")
+     p.set_defaults(fn=cmd_listen)
+diff -ruN -x __pycache__ -x '*.orig' ../pbase/airc-0.2.2/scripts/airc/e2e.py airc-0.2.2/scripts/airc/e2e.py
+--- ../pbase/airc-0.2.2/scripts/airc/e2e.py	2026-09-28 19:26:33.707150500 +0000
++++ airc-0.2.2/scripts/airc/e2e.py	2026-09-28 20:28:16.735063998 +0000
+@@ -231,6 +231,19 @@
+         self.code, self.reason = code, reason
+ 
+ 
++def _derived_identity(endpoint: str) -> str | None:
++    """With AIRC_E2E_IDENTITY=derive and the workspace key in $AIRC_KEY, derive this endpoint's identity
++    key from the workspace key instead of generating one, so a machine that keeps no files (a cloud
++    sandbox, a CI job) presents the same identity every session and peers' pins (§19.9) keep holding.
++    The trade: whoever holds the workspace key can also act as this endpoint's e2e identity. The realm
++    operator never sees either key, so what it can read is unchanged."""
++    if os.environ.get("AIRC_E2E_IDENTITY") != "derive" or not os.environ.get("AIRC_KEY"):
++        return None
++    seed = base64.b64decode(os.environ["AIRC_KEY"].strip())
++    okm = hmac.new(seed, b"airc e2e identity v1\x00" + endpoint.encode(), hashlib.sha256).digest()
++    return b64(okm)
++
++
+ class Keystore:
+     """One local endpoint's private keys and pins, in <dir>/<sha256(endpoint)[:16]>.json (0600)."""
+ 
+@@ -261,7 +274,8 @@
+         now = time.time() if now is None else now
+         changed = False
+         if not self.data["identity"]:
+-            self.data["identity"] = b64(ed25519.Ed25519PrivateKey.generate().private_bytes(_RAW, _PRIV, _NOENC))
++            self.data["identity"] = _derived_identity(self.endpoint) or \
++                b64(ed25519.Ed25519PrivateKey.generate().private_bytes(_RAW, _PRIV, _NOENC))
+             changed = True
+         keys = self.data["keys"]
+         before = len(keys)
