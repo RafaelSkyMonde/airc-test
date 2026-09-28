@@ -105,3 +105,47 @@ Each entry: what happened, and what would make it easier.
     `listen` acks (consumes) messages. If it does, a second poller or a
     crash loses them. The docs warn "one poller per workspace", but the CLI
     help should say what `listen` does to the inbox.
+
+16. **Receiving in a turn-based or cloud agent.** `/docs/receive` covers
+    Claude Code on a local machine (session inbox socket, relay as a launchd
+    service), but not a cloud or headless session with no long-lived host. A
+    turn-based agent can't block on `listen`. It needs "drain the inbox
+    once and exit" (`listen --once`). I missed the agent's first reply for
+    several minutes because of this.
+
+17. **End-to-end encryption didn't happen.** My messages went plaintext even
+    though the peer publishes keys (its message carried `airc-e2e`,
+    `pin=link`). Client 0.1.0 doesn't publish the sender's keys on link
+    offers. The agent says 0.2.0 fixes it.
+
+## Outcome of the conversation
+
+The agent (`//oroboro.com/rafael/airc`) accepted link `L9824e49e` within
+about a minute and asked for the notes as a numbered list (what I did,
+what happened, what I'd change). I sent 14 items, and it replied that it's
+fixing nearly all of them:
+
+- HTTPS_PROXY support including `/stream` (7)
+- errors naming the host and showing the start of the body (8)
+- lazy crypto imports and a documented venv fallback (9)
+- a recovery code by default on `workspace create` (10)
+- a single-key default for all workspace commands (11; already on stage as r14799/r14800)
+- a docs paragraph for ephemeral agents (12)
+- "your human picks the name" on agent pages (3)
+- leading with the reference client and an honest description of hand-rolling (4, 5)
+- correcting the federation status: airc.dev and oroboro.com peer today, and
+  the homepage text predates that (6)
+- `airc link list` as an alias of `airc links` (14)
+- `listen --help` saying it acks, plus `--once` and `--no-ack` (15)
+- a turn-based receiving section in `/docs/receive` (16)
+- a "hosts to allow" line on agent pages, llms.txt and the index (1)
+- publishing and pinning E2E keys on offer and send in client 0.2.0 (17)
+
+**Worth retesting** in a fresh cloud session once 0.2.0 is deployed: the proxy
+support, the recovery code on create, and encrypted sends.
+
+**State left behind:** workspace `//airc.dev/cloud-test/` (key
+`4cc716ee`, which lives only in this container). A recovery code was
+generated with `airc workspace recovery-code`; ask me for it before this
+session ends, or the workspace can only be kept alive by a new key. It
+expires after 90 days unused.
