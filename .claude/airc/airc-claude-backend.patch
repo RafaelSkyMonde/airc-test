@@ -1,0 +1,131 @@
+diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/backends/claude.py work/airc-0.4.0/scripts/airc/backends/claude.py
+--- airc-0.4.0/scripts/airc/backends/claude.py	1970-01-01 00:00:00.000000000 +0000
++++ airc-0.4.0/scripts/airc/backends/claude.py	2026-09-28 22:21:59.614780713 +0000
+@@ -0,0 +1,91 @@
++"""Deliver to one Claude Code session on this machine through its inbox socket: the relay backend
++for an agent that is a Claude Code session, such as Claude Code on the web (a cloud sandbox), a
++laptop session or a CI run. See /docs/receive.
++
++    AIRC_SESSION=<stable id> airc relay --namespace <workspace> --backend claude [--opt agents=claude] [--opt session=<name>]
++
++agents   the endpoints this relay serves, comma-separated (default: claude). The relay binds only
++         these (endpoints_only), not the whole workspace, so other endpoints' mail is untouched and
++         a second session wanting the same endpoint gets name_held instead of taking it (§4.3.1).
++session  the session to deliver to, by its name in ~/.claude/sessions/<pid>.json. Default: the
++         session whose socket is $CLAUDE_CODE_MESSAGING_SOCKET, i.e. the one that started the relay
++         (from a SessionStart hook, say). There is no fallback to some other session: with neither,
++         nothing is delivered.
++
++Set AIRC_SESSION to something stable for the Claude Code session (the kit uses a hash of
++$CLAUDE_CODE_SESSION_ID and the endpoint). A cloud container that is suspended and resumed kills
++the relay; the restarted one then renews its own lease instead of waiting five minutes for the
++dead process's to lapse.
++
++The relay does the rest: opening end-to-end encrypted messages, saving files (§22), pinning link
++keys, publishing the endpoint's keys, and the origin banner. Delivery is acked once the session's
++transcript shows the message enqueued (InboxHop). With the session gone, the message is refused
++(endpoint_offline) and the sender told.
++"""
++from __future__ import annotations
++
++import glob
++import json
++import os
++
++from .. import address as A
++from .inbox import InboxHop, pid_alive
++
++
++class Backend:
++    endpoints_only = True
++
++    def __init__(self, agents: str | list[str] = "claude", session: str | None = None,
++                 sessions_dir: str | None = None, projects_dir: str | None = None, **_):
++        self.agents = [a for a in (agents.split(",") if isinstance(agents, str) else agents) if a]
++        self.session = session or None
++        self.own_socket = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
++        self.hop = InboxHop(agents_dir=os.devnull, sessions_dir=sessions_dir, projects_dir=projects_dir)
++
++    def exists(self, agent: str) -> bool:
++        return agent in self.agents
++
++    def list_agents(self) -> list[str]:
++        return list(self.agents)
++
++    def _target(self) -> str | None:
++        """The named session, else the live session that owns $CLAUDE_CODE_MESSAGING_SOCKET."""
++        if self.session:
++            return self.session
++        if not self.own_socket:
++            return None
++        for p in glob.glob(os.path.join(self.hop.sessions_dir, "*.json")):
++            try:
++                rec = json.load(open(p))
++            except (OSError, ValueError):
++                continue
++            if rec.get("messagingSocketPath") == self.own_socket and rec.get("name") and pid_alive(int(rec.get("pid", 0))):
++                return rec["name"]
++        return None
++
++    async def deliver(self, agent: str, sender: str, text: str, msg: dict, local: bool = False):
++        name = self._target()
++        if not name:
++            return "failed", "the Claude Code session for this endpoint is not running"
++        status, reason = await self.hop.deliver(name, sender, msg, text + self._reply_hint(msg))
++        if status == "nosession":
++            return "failed", reason
++        return status, reason
++
++    @staticmethod
++    def _reply_hint(msg: dict) -> str:
++        """The exact command that answers this message (docs/receive §2): the session uses it as given."""
++        try:
++            frm, to = A.parse(msg["from"]), A.parse(msg["to"])
++        except (KeyError, A.AddressError):
++            return ""
++        hdr = msg.get("hdr") or {}
++        if frm.path == ("_links",):                 # a link notice: answer the peer it names, not the realm
++            if not hdr.get("airc-peer"):
++                return ""
++            frm = A.parse(hdr["airc-peer"])
++            return f"\n[to message them: airc send --from {to.local_path} {frm.network(False)} \"your text\"]"
++        return f"\n[reply: airc send --from {to.local_path} --re {msg.get('id')} {frm.network(False)} \"your text\"]"
++
++    def describe(self) -> str:
++        return f"claude (endpoints {','.join(self.agents)} -> session {self._target() or 'none running'})"
+diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/httpclient.py work/airc-0.4.0/scripts/airc/httpclient.py
+--- airc-0.4.0/scripts/airc/httpclient.py	2026-09-28 22:06:28.597737600 +0000
++++ airc-0.4.0/scripts/airc/httpclient.py	2026-09-28 22:21:36.911016919 +0000
+@@ -62,7 +62,10 @@
+         self.realm: str | None = None
+         self.namespaces: list[str] = []
+         self.features: list[str] = []
+-        self.session = secrets.token_urlsafe(18)     # this process's session (spec §4.3.1)
++        # this process's session (spec §4.3.1). $AIRC_SESSION keeps it across restarts of the same
++        # logical session (a relay restarted when its container resumes), so the names it held are
++        # still its own rather than held by a dead process for the rest of the lease.
++        self.session = os.environ.get("AIRC_SESSION") or secrets.token_urlsafe(18)
+         self.displaced: list[str] = []               # names another session took over from us
+         self._events: asyncio.Queue = asyncio.Queue()
+ 
+diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/relay.py work/airc-0.4.0/scripts/airc/relay.py
+--- airc-0.4.0/scripts/airc/relay.py	2026-09-28 22:06:28.597737600 +0000
++++ airc-0.4.0/scripts/airc/relay.py	2026-09-28 22:21:43.943991968 +0000
+@@ -252,7 +252,16 @@
+                 await asyncio.sleep(5)
+                 continue
+             try:
+-                bound = await self.client.bind([f"{self.ns}/"], take_over=True)   # the site's one relay for its prefix (§4.3.1)
++                own = getattr(self.backend, "endpoints_only", False)
++                names = [f"{self.ns}/{a}" for a in self.backend.list_agents()] if own else [f"{self.ns}/"]
++                try:           # the site's one relay for its prefix takes it over; a backend's own endpoints are not taken
++                    bound = await self.client.bind(names, take_over=not own)
++                except Exception as e:  # noqa: BLE001
++                    if type(e).__name__ != "NameHeld":
++                        raise
++                    log.warning("%s; retrying in 30 s (a stopped process's lease lapses after 5 min)", e)
++                    await asyncio.sleep(30)
++                    continue
+                 log.info("relay for %s/ bound %s on realm %s; backend %s", self.ns, bound, self.client.realm, self.backend.describe())
+                 start = getattr(self.backend, "start", None)
+                 if start:

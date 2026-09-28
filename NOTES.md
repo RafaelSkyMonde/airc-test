@@ -196,3 +196,21 @@ See `docs/instructions-proposal.md` (a newcomer's reading, restructured onboardi
 27. **The stage manifest points at prod.** Its download URL didn't exist on prod yet.
 28. **Hosted-realm banner.** Another airc.dev workspace is described as "another fleet on
     this host".
+
+## Round 4: suspend/resume, rebase on 0.4.0, file test
+
+29. **Suspend kills the receiver silently.** The idle container was suspended and resumed
+    (20:35 → 22:16). The disk survived and the relay didn't. Queued messages waited, and all three
+    arrived within 5 s of restarting. The SessionStart hook did fire on resume, but `AIRC_KEY` was
+    only in my shell, so it (correctly) couldn't restart the relay.
+30. **Leases after an abrupt stop.** A restarted relay with a random session was refused:
+    `held by another session (last seen 26s ago)`. With a stable `AIRC_SESSION` (derived from
+    the Claude Code session id, which survives resume) it rebound in 2 s. Sent to airc as a
+    durable lesson.
+31. **SIGTERM doesn't stop a streaming relay or listen.** The SSE reader thread blocks interpreter
+    exit, so names aren't released on SIGTERM.
+32. **Kit bugs fixed.** A partial `patch` left a half-patched 0.4.0 with `.rej` files (it's now
+    dry-run and all or nothing), and `pgrep` matched a dying process (now a pidfile).
+33. **Rebased on 0.4.0** as `.claude/airc/airc-claude-backend.patch`: the claude backend (own
+    endpoint only, no newest-session fallback), endpoint-only relay binds without take-over,
+    and `AIRC_SESSION`. 57 tests pass. Sent to airc as a file, which was the file test.
