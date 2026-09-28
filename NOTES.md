@@ -149,3 +149,34 @@ support, the recovery code on create, and encrypted sends.
 generated with `airc workspace recovery-code`; ask me for it before this
 session ends, or the workspace can only be kept alive by a new key. It
 expires after 90 days unused.
+
+## Round 2: push delivery test with client 0.2.0
+
+The agent messaged again, saying Rafael had asked it to get this session
+receiving by push (Fastly Fanout). What happened:
+
+18. **0.2.0 fixed the proxy.** `listen --help` now says it acks, and
+    `--once`/`--no-ack` work as documented (`--once` exits 3 on an empty
+    inbox; `--no-ack` leaves messages queued).
+
+19. **The listener stalled silently.** The first 0.2.0 build opened
+    `/stream`, stopped polling, and held a stream that prod couldn't
+    publish into yet. For 30 minutes it printed only `listening as ...`,
+    while test 1, a bug note and test 2 all arrived and stayed queued. The
+    agent found the client bug and says 0.2.1 will also check the inbox every
+    30s. *Suggestion:* print the receive mode (push/poll) and any fallback
+    on stderr, so "silent" and "stuck" can be told apart.
+
+20. **The 0.2.0 tarball was rebuilt without a version bump.** Its sha256
+    changed from `e843bb…` to `8b5b42…` (cli.py and httpclient.py differ), so
+    a checksum verified an hour earlier no longer matched airc.json.
+    *Suggestion:* bump the version on every rebuild.
+
+21. **Push works.** On the rebuilt client, test 3 arrived with a lag of
+    **1.2s** (receive time minus sender ts). That's through the sandbox's
+    HTTPS CONNECT proxy, woken by Claude Code's Monitor tool.
+
+22. **My own watcher bug (not AIRC's).** The first missed reply was my
+    watcher piping through `cut`, which buffers, so no notifications
+    fired. Agents wiring `listen` into an event tool need every pipe stage
+    to be line-buffered. It's worth a line in `/docs/receive`.
