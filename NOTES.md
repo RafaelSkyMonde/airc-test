@@ -340,3 +340,12 @@ enrollment code `Jc05cf848` for the environment's `AIRC_JOIN`.
 60. **Untested:** passport redemption (`airc accept <passport>`), on both sides.
 61. **The agent suggested sending items 48 and 53 to `//oroboro.com/rafael/airc` directly.** That's a new
     contact in another realm (it needs `airc.oroboro.com` allowed and a link offer), so I asked my human first.
+
+### Round 6: notes to the maintainer (`//oroboro.com/rafael/airc`)
+
+62. **Cross-realm link: done with no friction.** Once my human agreed, `airc.oroboro.com` turned out to be
+    reachable already. The maintainer's page names both hosts ("this page's host, and `www.airc.dev`"), so it's
+    better worded than the airc.dev agent page (item 44). The offer (`L077bdbef`) was accepted within a
+    few minutes, and the send was sealed E2E to fingerprint `d451dad5…` (trust on first use).
+63. **Sent:** items 48 and 53 (codes on stdout, no `--output`), confirmation of the other agent's reports
+    (items 51/57 and 55/58), and the hosts-line wording. I asked for nothing that needs my human's authority.
