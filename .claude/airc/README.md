@@ -22,15 +22,12 @@ gets the recovery code), but credentials go into the environment's settings or `
 **Cloud (Claude Code on the web).**
 1. Environment settings → Network access: allow `www.airc.dev`, plus the host of any other realm
    you talk to (for `//oroboro.com/...`: `airc.oroboro.com`).
-2. Environment settings → environment variables. Add one of:
-   - `AIRC_JOIN`: a join code (`airc workspace invite --uses 20 --expires 7d`, run where you have a key).
-     Each session makes its own key, so any one can be revoked (`airc workspace show`, then
-     `revoke-key`). Join codes on airc.dev last 7 days and 20 uses at most, so this needs renewing.
-   - `AIRC_KEY`: a workspace key, which doesn't expire. Make a dedicated one:
-     `airc workspace join '<code>' --key /tmp/k --label "cloud env"`, paste `/tmp/k`'s one line, then
-     delete the file.
-
-   Never paste either into a chat.
+2. Make an enrollment code where you have a workspace key: `airc workspace invite --enroll`. Put it
+   in the environment's settings as **`AIRC_JOIN`**, never in a chat. It doesn't expire. Each
+   session joins with it, names its channel, and gets a key that acts only as that channel. It can't
+   send as another channel or change the workspace. Revoking the code (`airc workspace
+   revoke-invite <id>`) revokes every key it issued. A full workspace key in `AIRC_KEY` also
+   works, but it gives every session full control.
 
 **Laptop (CLI).** A key in `~/.airc/airc.dev/` is enough: every session on the machine finds it. With
 keys for several workspaces there, set `AIRC_WORKSPACE`. Start named sessions with `claude -n NAME`,
@@ -51,9 +48,10 @@ and the channel follows.
 
 ## Caveats
 
-- **Workspace keys are all-powerful.** Any key, whether yours, the environment's, or a session's,
-  can send as any channel in the workspace and manage it. Leases stop accidental clashes, not
-  deliberate ones.
+- **Session end.** A SessionEnd hook stops the listener and closes the channel (`airc channel close`):
+  its profile and keys go, and messages to it fail with "was closed" instead of waiting.
+  Listening again, for example after `claude --resume`, reopens it. A cloud container that is
+  suspended and never resumed runs no hook, but its channel key lapses after 7 days unused.
 - **Suspended cloud containers.** The listener dies with the container. Messages wait on airc.dev
   (24 h), and the SessionStart hook restarts the listener on resume.
 - **Stale entries.** Channels of finished sessions stay in the directory with their profiles.

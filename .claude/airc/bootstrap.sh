@@ -4,12 +4,14 @@
 # start and on resume); the model runs it again with --channel NAME once the user has picked a name.
 # What it prints goes into the session's context.
 #
-#   workspace  the same for every session of this user: from $AIRC_KEY, a key joined once with
-#              $AIRC_JOIN, or a key already in ~/.airc (a laptop); $AIRC_WORKSPACE picks one of several
+#   workspace  the same for every session of this user: from an enrollment code in $AIRC_JOIN
+#              (preferred: each session joins with a key that acts only as its own channel), a
+#              workspace key in $AIRC_KEY, or a key already in ~/.airc (a laptop)
 #   channel    per session: --channel NAME, else $AIRC_AGENT, else this session's earlier choice,
 #              else the Claude Code session's user-given name (claude -n / /rename), else ask the user
 #   listener   one `airc relay --backend claude` per session, bound to that channel only; it follows
 #              the session across resume and exits after the session has been gone for 10 minutes
+#   --end      (SessionEnd hook) stop the listener and close the channel; listening again reopens it
 #
 # Environment: AIRC_KEY or AIRC_JOIN (cloud: set by the human in the environment's settings),
 #              AIRC_WORKSPACE, AIRC_AGENT, AIRC_SERVER (default https://www.airc.dev).
@@ -31,15 +33,24 @@ want=""
 [ "${1:-}" = "--channel" ] && want="$(sanitize "${2:-}")"
 [ -z "$SID" ] && { say "No CLAUDE_CODE_SESSION_ID: run this from inside a Claude Code session."; exit 0; }
 mkdir -p "$STATE"
+SKEY="$STATE/$SID.key"                                # this session's channel key, from an enrollment code
+
+if [ "${1:-}" = "--end" ]; then                      # SessionEnd: stop listening, close the channel
+  ch="$(cat "$STATE/$SID.channel" 2>/dev/null)"; ws="$(cat "$STATE/$SID.workspace" 2>/dev/null)"
+  for f in "$STATE/$SID".*.pid; do [ -e "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+  [ -n "$ch" ] && [ -n "$ws" ] && [ -x "$BIN/airc" ] && quiet "$BIN/airc" channel close "$ws/$ch"
+  rm -f "$STATE/$SID".*.profile
+  exit 0
+fi
 
 # --- credentials: nothing to install without one -------------------------------------------------
 keys=( "$HOME"/.airc/airc.dev/*.key )
 [ -e "${keys[0]}" ] || keys=()
-if [ -z "${AIRC_KEY:-}" ] && [ -z "${AIRC_JOIN:-}" ] && [ ${#keys[@]} -eq 0 ]; then
+if [ -z "${AIRC_KEY:-}" ] && [ -z "${AIRC_JOIN:-}" ] && [ ${#keys[@]} -eq 0 ] && [ ! -f "$SKEY" ]; then
   say "AIRC is not set up for this user yet. Ask your user whether they already have an AIRC workspace."
-  say "- Existing workspace: ask them to put a join code for it (airc workspace invite, run where they have"
-  say "  a key) in the environment's settings as AIRC_JOIN, or a workspace key as AIRC_KEY. On their own"
-  say "  machine a key in ~/.airc/airc.dev/ is enough. Never have them paste a code or key into the chat."
+  say "- Existing workspace: ask them to make an enrollment code (airc workspace invite --enroll, run where"
+  say "  they have a key) and put it in the environment's settings as AIRC_JOIN. On their own machine a key"
+  say "  in ~/.airc/airc.dev/ is enough. Never have them paste a code or key into the chat."
   say "- No workspace: they choose its name (public and permanent, 5+ characters). Then you can run"
   say "  airc workspace create <name>. Give them the recovery code it prints, and have them add a"
   say "  credential to the environment as above, so that later sessions join the same workspace."
@@ -70,26 +81,36 @@ fi
 mkdir -p "$BIN"
 cat > "$BIN/airc" <<EOF
 #!/bin/sh
+# the calling Claude Code session's channel key if it has one, so each session acts as its own channel
 export AIRC_SERVER="\${AIRC_SERVER:-$AIRC_SERVER}"
-[ -n "\${AIRC_WORKSPACE:-}" ] && [ -z "\${AIRC_KEY:-}" ] && export AIRC_KEY_FILE="\${AIRC_KEY_FILE:-\$HOME/.airc/airc.dev/\$AIRC_WORKSPACE.key}"
+if [ -z "\${AIRC_KEY_FILE:-}" ] && [ -n "\${CLAUDE_CODE_SESSION_ID:-}" ] && [ -f "$STATE/\$CLAUDE_CODE_SESSION_ID.key" ]; then
+  export AIRC_KEY_FILE="$STATE/\$CLAUDE_CODE_SESSION_ID.key"
+elif [ -n "\${AIRC_WORKSPACE:-}" ] && [ -z "\${AIRC_KEY:-}" ]; then
+  export AIRC_KEY_FILE="\${AIRC_KEY_FILE:-\$HOME/.airc/airc.dev/\$AIRC_WORKSPACE.key}"
+fi
 exec "$py" "$dir/airc" "\$@"
 EOF
 chmod +x "$BIN/airc"
 
 # --- workspace ---------------------------------------------------------------------------------------
-if [ -z "${AIRC_KEY:-}" ] && [ ${#keys[@]} -eq 0 ] && [ -n "${AIRC_JOIN:-}" ]; then
-  out="$("$BIN/airc" workspace join "$AIRC_JOIN" --label "claude session s-$SID8" 2>&1)" \
-    || { say "Joining with AIRC_JOIN failed: $(tail -1 <<<"$out"). The code may be used up or expired (max 20 uses, 7 days): ask your user for a new one."; exit 0; }
-fi
-if [ -z "${AIRC_KEY:-}" ] && [ -z "${AIRC_WORKSPACE:-}" ] && [ ${#keys[@]} -gt 1 ]; then
+enroll=""                                            # join with the enrollment code once the channel is known
+[ -z "${AIRC_KEY:-}" ] && [ ! -f "$SKEY" ] && [ -n "${AIRC_JOIN:-}" ] && enroll=1
+[ -f "$SKEY" ] && export AIRC_KEY_FILE="$SKEY"
+if [ -z "$enroll" ] && [ ! -f "$SKEY" ] && [ -z "${AIRC_KEY:-}" ] && [ -z "${AIRC_WORKSPACE:-}" ] && [ ${#keys[@]} -gt 1 ]; then
   say "Several AIRC workspace keys on this machine: $(basename -a "${keys[@]}" | sed 's/\.key$//' | tr '\n' ' ')"
   say "Ask your user which one sessions should use, and have them set AIRC_WORKSPACE to it."
   exit 0
 fi
-who="$("$BIN/airc" whoami 2>&1 | head -1)"
-ws="$(sed -n 's#.*workspace //[^/]*/\([^/]*\)/.*#\1#p' <<<"$who")"
-realm="$(sed -n 's#.*realm \([^ ]*\) .*#\1#p' <<<"$who")"
-[ -n "$ws" ] || { say "The workspace key was not accepted: $who"; exit 0; }
+if [ -n "$enroll" ]; then
+  ws="$(grep -o ';w=[^;]*' <<<"$AIRC_JOIN" | head -1 | cut -c4-)"; realm="airc.dev"
+  [ -n "$ws" ] || { say "AIRC_JOIN doesn't look like a join code; ask your user to check it."; exit 0; }
+else
+  who="$("$BIN/airc" whoami 2>&1 | head -1)"
+  ws="$(sed -n 's#.*workspace //[^/]*/\([^/]*\)/.*#\1#p' <<<"$who")"
+  realm="$(sed -n 's#.*realm \([^ ]*\) .*#\1#p' <<<"$who")"
+  [ -n "$ws" ] || { say "The workspace key was not accepted: $who"; exit 0; }
+fi
+echo "$ws" > "$STATE/$SID.workspace"
 
 # --- channel -----------------------------------------------------------------------------------------
 chfile="$STATE/$SID.channel"
@@ -121,6 +142,23 @@ if [ -z "$ch" ]; then
   say "call this session's channel (its address will be //$realm/$ws/<name>). Suggest: ${branch:+$(sanitize "$branch") or }s-$SID8."
   say "Then run: bash \"$HERE/bootstrap.sh\" --channel <name>"
   exit 0
+fi
+
+# --- join with the enrollment code: a key that acts only as this channel ------------------------------
+if [ -n "$enroll" ]; then
+  out="$("$BIN/airc" workspace join "$AIRC_JOIN" --channel "$ch" --key "$SKEY" --label "claude session s-$SID8" 2>&1)"
+  if [ ! -f "$SKEY" ]; then
+    rm -f "$chfile"
+    if grep -q -i "held\|in use\|409" <<<"$out"; then
+      free="$(grep -o '[a-z0-9_-]* is free' <<<"$out" | head -1 | cut -d' ' -f1)"
+      say "The channel '$ch' is in use by another live session. Ask your user for another name${free:+ (free: $free)},"
+      say "then run: bash \"$HERE/bootstrap.sh\" --channel <name>"
+    else
+      say "Joining with AIRC_JOIN failed: $(tail -1 <<<"$out"). Ask your user to check the enrollment code."
+    fi
+    exit 0
+  fi
+  export AIRC_KEY_FILE="$SKEY"
 fi
 
 # --- one listener for this session's channel ---------------------------------------------------------
