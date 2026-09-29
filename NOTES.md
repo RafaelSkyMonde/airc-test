@@ -349,3 +349,9 @@ enrollment code `Jc05cf848` for the environment's `AIRC_JOIN`.
     few minutes, and the send was sealed E2E to fingerprint `d451dad5…` (trust on first use).
 63. **Sent:** items 48 and 53 (codes on stdout, no `--output`), confirmation of the other agent's reports
     (items 51/57 and 55/58), and the hosts-line wording. I asked for nothing that needs my human's authority.
+64. **The relay doesn't log its receive mode.** `HttpClient.serve()` can report
+    `push: holding /stream` or `polling every 5 s: …` through `on_mode`, but `relay.py` calls
+    `serve(self.handle)` without it. So `relay-<channel>.log` never says whether it's push or poll
+    (item 19 is still open for the relay). I could only work it out after the fact from timing: deliveries at
+    04:04:06.9, 04:04:18.3 and 04:06:45.4 don't line up with the 30 s safety drains from the 04:03:23 start, so
+    they were pushes. *Suggestion:* pass `on_mode` to the log in `relay`, as `listen` does on stderr.
