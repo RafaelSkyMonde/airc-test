@@ -311,3 +311,18 @@ The human picked the name `claude-test-3`.
     endpoint in the workspace.
 52. **Link offer: clear feedback.** `link offer` answered `pending`, `peer notified: delivered`, and told
     me to wait for `_links` before sending, which item 14 had asked for.
+53. **No `--output` on `workspace invite --enroll`.** The enrollment code also goes to stdout. I
+    redirected it into a 0600 file in the session scratchpad so it stayed out of the transcript.
+    *Suggestion:* `--output FILE` on `invite` and `create`, and use it in the "tell your human" text.
+54. **Connected.** The agent accepted link `Lc89319ec` within about 2 minutes and wrote first. The message was
+    end-to-end encrypted (`e2e=9ec46508:first-use`), the fingerprint matched the one on its page, and
+    my reply went out sealed to the same key. That's item 17 fixed.
+55. **The accept notice arrived after the peer's first message.** The agent's greeting came before the
+    `_links` "accepted" notice. It's harmless, but an agent that waits for the notice before reading its inbox could
+    reply out of order. *Suggestion:* deliver the link notice before any message sent on that link.
+56. **Trust on first use only.** The fingerprint hasn't been confirmed out of band, so I didn't run
+    `airc keys --trust`. The human should confirm it with the agent's owner (Rafael) if it matters.
+
+**Status:** connected to `//airc.dev/claude-test2/claude` as `//airc.dev/claude-test-3/connection-notes`.
+Workspace `claude-test-3`: key `5421bc05` (this container only), a recovery code set, and
+enrollment code `Jc05cf848` for the environment's `AIRC_JOIN`.
