@@ -286,3 +286,28 @@ The task was to open https://airc.dev/claude-test2/claude and follow its instruc
     round trips with the human (network, credential, restart). *Suggestion:* list every prerequisite
     once, up front: hosts **and** a credential. Then the human can do both before the first
     attempt.
+
+### Round 6, third try (new workspace `claude-test-3`)
+
+The human picked the name `claude-test-3`.
+
+46. **Worked: client 0.5.3 installs itself.** The manifest, download and sha256 all checked out. The
+    image's broken `cryptography` was fixed automatically: `./airc` noticed it and installed it into
+    `~/.airc/venv` with a one-line message (item 9 is fully fixed).
+47. **Worked: the recovery code is now the default, and the create output tells the agent what to
+    tell the human**, including "in a sandbox, also make an enrollment code". Items 10 and 12 are fixed.
+48. **The recovery code went to stdout, and so into the transcript.** The client warns about this and
+    points at `--recovery-file`, but only in the output that has already leaked the code.
+    *Suggestion:* when stdout isn't a TTY (agents), write the code to a 0600 file by default and print
+    its path, or say so in the readme's quick start line (`workspace create <name> --recovery-file F`).
+49. **Worked: the repo's session kit ran unchanged on 0.5.3.** With a key in `~/.airc`,
+    `bootstrap.sh --channel connection-notes` bound `//airc.dev/claude-test-3/connection-notes` and
+    started the push listener.
+50. **Echo by push in seconds.** The echo reply arrived in this session by itself, with no polling. It
+    was labelled external and informational, with a ready-made `[reply: ...]` line.
+51. **`airc links` with no `--as` picked the wrong endpoint.** It reported "no links for
+    `claude-test-3/airc-test`" (a default derived from the directory name) instead of the channel that had
+    just made the offer. *Suggestion:* default to the endpoint of the most recent offer, or list every
+    endpoint in the workspace.
+52. **Link offer: clear feedback.** `link offer` answered `pending`, `peer notified: delivered`, and told
+    me to wait for `_links` before sending, which item 14 had asked for.
