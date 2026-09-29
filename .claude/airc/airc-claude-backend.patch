@@ -1,7 +1,7 @@
-diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/backends/claude.py work/airc-0.4.0/scripts/airc/backends/claude.py
---- airc-0.4.0/scripts/airc/backends/claude.py	1970-01-01 00:00:00.000000000 +0000
-+++ airc-0.4.0/scripts/airc/backends/claude.py	2026-09-28 22:21:59.614780713 +0000
-@@ -0,0 +1,91 @@
+diff -ruN -x __pycache__ -x '*.orig' base/airc-0.4.1/scripts/airc/backends/claude.py work/airc-0.4.1/scripts/airc/backends/claude.py
+--- airc-0.4.1/scripts/airc/backends/claude.py	1970-01-01 00:00:00.000000000 +0000
++++ airc-0.4.1/scripts/airc/backends/claude.py	2026-09-29 00:38:11.910015774 +0000
+@@ -0,0 +1,127 @@
 +"""Deliver to one Claude Code session on this machine through its inbox socket: the relay backend
 +for an agent that is a Claude Code session, such as Claude Code on the web (a cloud sandbox), a
 +laptop session or a CI run. See /docs/receive.
@@ -12,9 +12,14 @@ diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/backends/claude.py work/ai
 +         these (endpoints_only), not the whole workspace, so other endpoints' mail is untouched and
 +         a second session wanting the same endpoint gets name_held instead of taking it (§4.3.1).
 +session  the session to deliver to, by its name in ~/.claude/sessions/<pid>.json. Default: the
-+         session whose socket is $CLAUDE_CODE_MESSAGING_SOCKET, i.e. the one that started the relay
-+         (from a SessionStart hook, say). There is no fallback to some other session: with neither,
-+         nothing is delivered.
++         session whose sessionId is $CLAUDE_CODE_SESSION_ID (or --opt session_id=), i.e. the one that
++         started the relay from a SessionStart hook. The id survives `claude --resume` and a cloud
++         container's suspend/resume, where the pid, socket and derived name all change. Only
++         without a session id: the session owning $CLAUDE_CODE_MESSAGING_SOCKET. There is no
++         fallback to some other session: with no match, nothing is delivered.
++exit_after  seconds with no live session for this relay before it exits (default 600; 0 = never).
++         A relay started by a hook outlives the session on a laptop; without this it would keep
++         renewing its lease and hold the name for good.
 +
 +Set AIRC_SESSION to something stable for the Claude Code session (the kit uses a hash of
 +$CLAUDE_CODE_SESSION_ID and the endpoint). A cloud container that is suspended and resumed kills
@@ -28,22 +33,30 @@ diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/backends/claude.py work/ai
 +"""
 +from __future__ import annotations
 +
++import asyncio
 +import glob
 +import json
++import logging
 +import os
++import time
 +
 +from .. import address as A
 +from .inbox import InboxHop, pid_alive
++
++log = logging.getLogger("airc.claude")
 +
 +
 +class Backend:
 +    endpoints_only = True
 +
-+    def __init__(self, agents: str | list[str] = "claude", session: str | None = None,
-+                 sessions_dir: str | None = None, projects_dir: str | None = None, **_):
++    def __init__(self, agents: str | list[str] = "claude", session: str | None = None, session_id: str | None = None,
++                 exit_after: str | int = 600, sessions_dir: str | None = None, projects_dir: str | None = None, **_):
 +        self.agents = [a for a in (agents.split(",") if isinstance(agents, str) else agents) if a]
 +        self.session = session or None
++        self.session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or None
 +        self.own_socket = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
++        self.exit_after = float(exit_after)
++        self._watch: asyncio.Task | None = None
 +        self.hop = InboxHop(agents_dir=os.devnull, sessions_dir=sessions_dir, projects_dir=projects_dir)
 +
 +    def exists(self, agent: str) -> bool:
@@ -53,19 +66,42 @@ diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/backends/claude.py work/ai
 +        return list(self.agents)
 +
 +    def _target(self) -> str | None:
-+        """The named session, else the live session that owns $CLAUDE_CODE_MESSAGING_SOCKET."""
++        """The named session, else the live session with our session id, else the one owning our socket."""
 +        if self.session:
 +            return self.session
-+        if not self.own_socket:
-+            return None
++        by_socket = None
 +        for p in glob.glob(os.path.join(self.hop.sessions_dir, "*.json")):
 +            try:
 +                rec = json.load(open(p))
 +            except (OSError, ValueError):
 +                continue
-+            if rec.get("messagingSocketPath") == self.own_socket and rec.get("name") and pid_alive(int(rec.get("pid", 0))):
-+                return rec["name"]
-+        return None
++            if not rec.get("name") or not pid_alive(int(rec.get("pid", 0))):
++                continue
++            if self.session_id:                   # a session id is authoritative: never fall back to a socket
++                if rec.get("sessionId") == self.session_id:
++                    return rec["name"]
++            elif self.own_socket and rec.get("messagingSocketPath") == self.own_socket:
++                by_socket = rec["name"]
++        return by_socket
++
++    async def start(self):
++        """Called by the relay once bound: watch for the session going away for good."""
++        if self.exit_after > 0 and self._watch is None:
++            self._watch = asyncio.get_running_loop().create_task(self._watchdog())
++
++    async def _watchdog(self):
++        gone_since = None
++        while True:
++            await asyncio.sleep(min(30.0, self.exit_after / 4))
++            if self._target():
++                gone_since = None
++            elif gone_since is None:
++                gone_since = time.time()
++            elif time.time() - gone_since >= self.exit_after:
++                log.warning("no live Claude Code session for %s for %.0f s; exiting (the lease lapses in 5 min)",
++                            ",".join(self.agents), self.exit_after)
++                logging.shutdown()
++                os._exit(0)             # a clean exit waits on the stream thread (it blocks in read)
 +
 +    async def deliver(self, agent: str, sender: str, text: str, msg: dict, local: bool = False):
 +        name = self._target()
@@ -93,9 +129,9 @@ diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/backends/claude.py work/ai
 +
 +    def describe(self) -> str:
 +        return f"claude (endpoints {','.join(self.agents)} -> session {self._target() or 'none running'})"
-diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/httpclient.py work/airc-0.4.0/scripts/airc/httpclient.py
---- airc-0.4.0/scripts/airc/httpclient.py	2026-09-28 22:06:28.597737600 +0000
-+++ airc-0.4.0/scripts/airc/httpclient.py	2026-09-28 22:21:36.911016919 +0000
+diff -ruN -x __pycache__ -x '*.orig' base/airc-0.4.1/scripts/airc/httpclient.py work/airc-0.4.1/scripts/airc/httpclient.py
+--- airc-0.4.1/scripts/airc/httpclient.py	2026-09-28 22:06:28.597737600 +0000
++++ airc-0.4.1/scripts/airc/httpclient.py	2026-09-29 00:34:20.265849451 +0000
 @@ -62,7 +62,10 @@
          self.realm: str | None = None
          self.namespaces: list[str] = []
@@ -108,10 +144,10 @@ diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/httpclient.py work/airc-0.
          self.displaced: list[str] = []               # names another session took over from us
          self._events: asyncio.Queue = asyncio.Queue()
  
-diff -ruN -x __pycache__ base/airc-0.4.0/scripts/airc/relay.py work/airc-0.4.0/scripts/airc/relay.py
---- airc-0.4.0/scripts/airc/relay.py	2026-09-28 22:06:28.597737600 +0000
-+++ airc-0.4.0/scripts/airc/relay.py	2026-09-28 22:21:43.943991968 +0000
-@@ -252,7 +252,16 @@
+diff -ruN -x __pycache__ -x '*.orig' base/airc-0.4.1/scripts/airc/relay.py work/airc-0.4.1/scripts/airc/relay.py
+--- airc-0.4.1/scripts/airc/relay.py	2026-09-28 22:36:24.521880900 +0000
++++ airc-0.4.1/scripts/airc/relay.py	2026-09-29 00:34:20.266039207 +0000
+@@ -257,7 +257,16 @@
                  await asyncio.sleep(5)
                  continue
              try:

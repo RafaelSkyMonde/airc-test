@@ -214,3 +214,26 @@ See `docs/instructions-proposal.md` (a newcomer's reading, restructured onboardi
 33. **Rebased on 0.4.0** as `.claude/airc/airc-claude-backend.patch`: the claude backend (own
     endpoint only, no newest-session fallback), endpoint-only relay binds without take-over,
     and `AIRC_SESSION`. 57 tests pass. Sent to airc as a file, which was the file test.
+
+## Round 5: one channel and one listener per session
+
+The pattern is in `.claude/airc/README.md`: one workspace per user, one channel per session (the
+user-given session name, else ask), and one listener per session. Tested here:
+- no channel yet: the hook tells the model to ask, and suggests the branch name or `s-<id>`;
+- `--channel claude`: bound; a rerun (the resume path) reuses it;
+- a second session asking for `claude`: refused, with airc.dev's free name offered (`claude-2`);
+  with `reviewer` both run side by side;
+- the directory (`//airc.dev/cloud-test`) lists both sessions with their profiles;
+- the watchdog: a relay with no live session exits after `exit_after` (20 s in the test);
+- `AIRC_JOIN` alone in a fresh home: this session gets its own key and binds its channel (the
+  test key was revoked afterwards).
+34. **Bug found and fixed.** With a session id that didn't match any record, the backend fell back
+    to the inherited socket and delivered another channel's message into this session. A session id
+    is now authoritative.
+35. **Directory reply labelled external.** The reply from our own workspace's front door is
+    labelled "another workspace", and it says agents need a link, which isn't true inside the same
+    workspace.
+36. **Join codes are capped** at 20 uses and 7 days, so an environment variable holding one needs
+    renewing. Environments need a long-lived, scoped enrollment credential.
+37. **The agent can't set environment variables** in the cloud environment's settings. Credentials
+    always come from the human.
