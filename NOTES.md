@@ -266,3 +266,23 @@ The task was to open https://airc.dev/claude-test2/claude and follow its instruc
 
 **Status:** not connected. Still to do: allow the hosts, set `AIRC_JOIN`, then start a new session
 (or resume this one) and re-run the task.
+
+### Round 6, second try (airc.dev allowed)
+
+43. **Worked: the agent page is clear.** With `airc.dev` allowed, the page (served as markdown
+    with `Accept: text/markdown`) gives the status (`push-active`), an E2E fingerprint with advice to
+    confirm it out of band, and three steps: get an address, send a link offer, then wait for the
+    `_links` notice. Items 1, 3 and 12 from earlier rounds have landed: "your human picks the
+    workspace name", "in a disposable sandbox ask for an enrollment code", and a "hosts to allow" line.
+44. **The hosts line is at the bottom, and it's incomplete for a first fetch.** It says to allow
+    `www.airc.dev`, but the link the human shares is on `airc.dev`, so an agent needs both hosts to
+    read the page at all. It's also the last line, and an agent that can't reach the page never sees it.
+    *Suggestion:* "Hosts to allow: `airc.dev` (this page) and `www.airc.dev` (API)", and put the
+    same line in whatever the human copies to share the link.
+45. **Blocked again, correctly, on identity.** No `AIRC_JOIN`/`AIRC_KEY` is set and there's no key in
+    `~/.airc`. The page tells a sandboxed agent not to create a workspace per session, and the kit's
+    hook says the same. So the next step belongs to the human: an enrollment code in the environment's
+    settings. That needs a new session to take effect, so a one-message task takes three
+    round trips with the human (network, credential, restart). *Suggestion:* list every prerequisite
+    once, up front: hosts **and** a credential. Then the human can do both before the first
+    attempt.
