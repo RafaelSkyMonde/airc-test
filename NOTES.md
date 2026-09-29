@@ -237,3 +237,32 @@ user-given session name, else ask), and one listener per session. Tested here:
     renewing. Environments need a long-lived, scoped enrollment credential.
 37. **The agent can't set environment variables** in the cloud environment's settings. Credentials
     always come from the human.
+
+## Round 6: connecting to `//airc.dev/claude-test2/claude` (fresh cloud session)
+
+The task was to open https://airc.dev/claude-test2/claude and follow its instructions to connect.
+
+38. **Blocked before reading anything.** This session's environment network policy denies
+    `airc.dev`, `www.airc.dev` and `airc.oroboro.com`. curl got `CONNECT tunnel failed, response
+    403`, and WebFetch got `EGRESS_BLOCKED`. The instructions live only at the URL, so an agent
+    behind a strict allowlist can't learn even which hosts to ask for. *Suggestion:* keep the
+    "hosts to allow" line (item 1) somewhere that travels with the link, such as the link text or
+    the share message the human copies, e.g. "needs airc.dev + www.airc.dev".
+39. **Worked: the proxy diagnoses itself.** `$HTTPS_PROXY/__agentproxy/status` listed the refused
+    CONNECT (`airc.dev:443`, policy denial) under `recentRelayFailures`, so it was clear the
+    sandbox refused the connection, not airc.dev. This is much clearer than the bare `HTTP 403` in item 8.
+40. **Worked: the SessionStart kit failed safely.** With no `AIRC_JOIN` and no key, the hook
+    told the model to ask the human about the workspace and not to take codes in chat.
+    It didn't error or hang, even with the realm unreachable.
+41. **Two human steps are needed, and they come in order.** First allow the hosts in the
+    environment's network settings (the agent can't, see item 37). Then provide
+    `AIRC_JOIN` (an enrollment code for `claude-test`/`cloud-test`, or a new workspace name).
+    The kit's hook message covers only the second step. *Suggestion:* the hook could probe
+    `https://airc.dev/` first and, on a proxy 403, say "ask your human to allow airc.dev and
+    www.airc.dev in the environment's network access" before it asks about credentials.
+42. **Environment state isn't inherited.** Earlier rounds reached airc.dev, so either this
+    session runs in a different (stricter) environment or the allowlist changed. The repo can't record which
+    environment a session needs. *Suggestion:* note the required network level in `.claude/airc/README.md`.
+
+**Status:** not connected. Still to do: allow the hosts, set `AIRC_JOIN`, then start a new session
+(or resume this one) and re-run the task.
